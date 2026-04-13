@@ -1,0 +1,35 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      java: corretto17
+      nodejs: 18
+  build:
+    commands:
+      # 1. Build Spring Boot Backend
+      - cd backend
+      - ./mvnw clean package -DskipTests
+      - cd ..
+      
+      # 2. Build React Frontend
+      - cd frontend
+      # Fetch the ALB DNS Name dynamically
+      - ALB_DNS=$(aws elbv2 describe-load-balancers --names bookmyshow-alb --query "LoadBalancers[0].DNSName" --output text --region ap-south-1)
+      # The ALB listens on port 80, so we just use standard HTTP
+      - echo "REACT_APP_API_URL=http://$ALB_DNS" > .env
+      - npm install
+      - npm run build
+      - cd ..
+      
+  post_build:
+    commands:
+      # 3. Deploy frontend to S3 (Replace YOUR_BUCKET_NAME manually after stack creation)
+      - aws s3 sync frontend/dist/ s3://YOUR_BUCKET_NAME --delete
+
+artifacts:
+  files:
+    - backend/target/*.jar
+    - appspec.yml
+    - scripts/*
+  discard-paths: yes

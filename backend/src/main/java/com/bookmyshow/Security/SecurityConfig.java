@@ -46,6 +46,7 @@ public class SecurityConfig {
                         // ✅ Public APIs
                         .requestMatchers(
                                 "/signup/register",
+                                "/",
                                 "/signup/login",
                                 "/forgetpassword/**",
                                 "/movies/all",

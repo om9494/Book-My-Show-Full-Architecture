@@ -26,7 +26,7 @@ phases:
     commands:
       # 3. Deploy frontend to S3
       # NOTE: If using Create React App, change 'dist/' to 'build/' below
-      - aws s3 sync frontend/dist/ s3://bookmyshow-stack-frontendbucket-rgihpzlzhswu --delete
+      - aws s3 sync frontend/dist/ s3://bookmyshow-stack-frontendbucket-q7tcrn8zwitx --delete
 
 artifacts:
   files:

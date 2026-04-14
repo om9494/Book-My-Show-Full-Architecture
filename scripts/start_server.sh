@@ -10,6 +10,10 @@ export SPRING_DATA_REDIS_PORT=6379
 export RAZORPAY_KEY_ID=$(echo $SECRET_JSON | jq -r '."razorpay.key.id"')
 export RAZORPAY_KEY_SECRET=$(echo $SECRET_JSON | jq -r '."razorpay.key.secret"')
 
+# ✅ Add mail credentials
+export MAIL_USERNAME=$(echo $SECRET_JSON | jq -r '."spring.mail.username"')
+export MAIL_PASSWORD=$(echo $SECRET_JSON | jq -r '."spring.mail.password"')
+
 # Start the application
 cd /opt/bookmyshow
 nohup java -jar *.jar > /opt/bookmyshow/app.log 2>&1 &

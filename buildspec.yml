@@ -17,7 +17,7 @@ phases:
       - cd frontend
       # Fetch the ALB DNS Name dynamically
       - ALB_DNS=$(aws elbv2 describe-load-balancers --names bookmyshow-alb --query "LoadBalancers[0].DNSName" --output text --region us-east-1)
-      - echo "REACT_APP_API_URL=http://$ALB_DNS" > .env
+      - echo "VITE_BACKEND_API=http://$ALB_DNS" > .env
       - npm install
       - npm run build
       - cd ..

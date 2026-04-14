@@ -1,6 +1,6 @@
 #!/bin/bash
 # Fetch credentials from Secrets Manager natively via AWS CLI
-SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id bookmyshow/app-config --query SecretString --output text --region ap-south-1)
+SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id bookmyshow/app-config --query SecretString --output text --region us-east-1)
 
 export SPRING_DATASOURCE_URL=$(echo $SECRET_JSON | jq -r '."spring.datasource.url"')
 export SPRING_DATASOURCE_USERNAME=$(echo $SECRET_JSON | jq -r '."spring.datasource.username"')

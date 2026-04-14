@@ -16,4 +16,4 @@ export MAIL_PASSWORD=$(echo $SECRET_JSON | jq -r '."spring.mail.password"')
 
 # Start the application
 cd /opt/bookmyshow
-nohup java -jar *.jar > /opt/bookmyshow/app.log 2>&1 &
+nohup java -jar /opt/bookmyshow/book-my-show-0.0.1-SNAPSHOT.jar --server.address=0.0.0.0 > /dev/null 2>&1 &

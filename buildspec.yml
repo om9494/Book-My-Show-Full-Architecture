@@ -7,8 +7,9 @@ phases:
       nodejs: 18
   build:
     commands:
-      # 1. Build Spring Boot Backend
+      # 1. Build Spring Boot Backend (Maven)
       - cd backend
+      - chmod +x mvnw  # <-- This fixes the "Permission denied" error!
       - ./mvnw clean package -DskipTests
       - cd ..
       
@@ -16,7 +17,6 @@ phases:
       - cd frontend
       # Fetch the ALB DNS Name dynamically
       - ALB_DNS=$(aws elbv2 describe-load-balancers --names bookmyshow-alb --query "LoadBalancers[0].DNSName" --output text --region ap-south-1)
-      # The ALB listens on port 80, so we just use standard HTTP
       - echo "REACT_APP_API_URL=http://$ALB_DNS" > .env
       - npm install
       - npm run build
@@ -24,11 +24,13 @@ phases:
       
   post_build:
     commands:
-      # 3. Deploy frontend to S3 (Replace YOUR_BUCKET_NAME manually after stack creation)
+      # 3. Deploy frontend to S3
+      # NOTE: If using Create React App, change 'dist/' to 'build/' below
       - aws s3 sync frontend/dist/ s3://bookmyshow-stack-frontendbucket-rgihpzlzhswu --delete
 
 artifacts:
   files:
+    # 4. Correct artifact path for Maven target folder
     - backend/target/*.jar
     - appspec.yml
     - scripts/*

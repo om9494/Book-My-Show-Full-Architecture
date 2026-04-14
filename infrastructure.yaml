@@ -30,7 +30,9 @@ Resources:
       CidrBlock: !Ref VpcCidr
       EnableDnsHostnames: true
       EnableDnsSupport: true
-      Tags: [{ Key: Name, Value: !Sub ${ProjectName}-vpc }]
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-vpc
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -47,7 +49,9 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.20.0.0/24
       MapPublicIpOnLaunch: true
-      Tags: [{ Key: Name, Value: !Sub ${ProjectName}-public-a }]
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-public-a
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
@@ -56,7 +60,9 @@ Resources:
       AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: 10.20.1.0/24
       MapPublicIpOnLaunch: true
-      Tags: [{ Key: Name, Value: !Sub ${ProjectName}-public-b }]
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-public-b
 
   PrivateDbSubnetA:
     Type: AWS::EC2::Subnet
@@ -76,7 +82,9 @@ Resources:
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
-    Properties: { VpcId: !Ref VPC }
+    Properties:
+      VpcId: !Ref VPC
+  
   PublicRoute:
     Type: AWS::EC2::Route
     DependsOn: VPCGatewayAttachment
@@ -87,10 +95,15 @@ Resources:
 
   PublicSubnetARouteAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref PublicSubnetA, RouteTableId: !Ref PublicRouteTable }
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+      
   PublicSubnetBRouteAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref PublicSubnetB, RouteTableId: !Ref PublicRouteTable }
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
 
   # --- SECURITY GROUPS ---
   ALBSecurityGroup:
@@ -145,8 +158,11 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
       Name: !Sub ${ProjectName}-alb
-      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
-      SecurityGroups: [!Ref ALBSecurityGroup]
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
       Type: application
 
   AppTargetGroup:
@@ -158,7 +174,8 @@ Resources:
       Protocol: HTTP
       HealthCheckPath: /
       HealthCheckProtocol: HTTP
-      Matcher: HTTPCode
+      Matcher:
+        HttpCode: 200-399
       TargetGroupAttributes:
         - Key: deregistration_delay.timeout_seconds
           Value: '30'
@@ -183,7 +200,8 @@ Resources:
         InstanceType: !Ref InstanceType
         IamInstanceProfile:
           Arn: !GetAtt Ec2InstanceProfile.Arn
-        SecurityGroupIds: [!Ref AppSecurityGroup]
+        SecurityGroupIds:
+          - !Ref AppSecurityGroup
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
@@ -205,8 +223,11 @@ Resources:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
       AutoScalingGroupName: !Sub ${ProjectName}-asg
-      VPCZoneIdentifier: [!Ref PublicSubnetA, !Ref PublicSubnetB]
-      TargetGroupARNs: [!Ref AppTargetGroup]
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      TargetGroupARNs:
+        - !Ref AppTargetGroup
       LaunchTemplate:
         LaunchTemplateId: !Ref AppLaunchTemplate
         Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
@@ -243,11 +264,14 @@ Resources:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
       DBSubnetGroupDescription: Private subnets for Data Layer
-      SubnetIds: [!Ref PrivateDbSubnetA, !Ref PrivateDbSubnetB]
+      SubnetIds:
+        - !Ref PrivateDbSubnetA
+        - !Ref PrivateDbSubnetB
 
   BookMyShowDB:
     Type: AWS::RDS::DBInstance
     Properties:
+      DBName: bookmyshow
       DBInstanceIdentifier: !Sub ${ProjectName}-postgres
       Engine: postgres
       EngineVersion: '16.3'
@@ -255,7 +279,8 @@ Resources:
       AllocatedStorage: 20
       MasterUsername: !Ref DBUsername
       MasterUserPassword: !Ref DBPassword
-      VPCSecurityGroups: [!Ref DatabaseSecurityGroup]
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
       DBSubnetGroupName: !Ref DbSubnetGroup
       PubliclyAccessible: false
 
@@ -263,7 +288,9 @@ Resources:
     Type: AWS::ElastiCache::SubnetGroup
     Properties:
       Description: Private subnets for Redis
-      SubnetIds: [!Ref PrivateDbSubnetA, !Ref PrivateDbSubnetB]
+      SubnetIds:
+        - !Ref PrivateDbSubnetA
+        - !Ref PrivateDbSubnetB
 
   RedisCluster:
     Type: AWS::ElastiCache::CacheCluster
@@ -272,7 +299,8 @@ Resources:
       Engine: redis
       CacheNodeType: cache.t3.micro
       NumCacheNodes: 1
-      VpcSecurityGroupIds: [!Ref RedisSecurityGroup]
+      VpcSecurityGroupIds:
+        - !Ref RedisSecurityGroup
       CacheSubnetGroupName: !Ref RedisSubnetGroup
 
   AppSecret:
@@ -281,7 +309,7 @@ Resources:
       Name: !Sub ${ProjectName}/app-config
       SecretString: !Sub |
         {
-          "spring.datasource.url":"jdbc:postgresql://${BookMyShowDB.Endpoint.Address}:5432/${DBUsername}",
+          "spring.datasource.url":"jdbc:postgresql://${BookMyShowDB.Endpoint.Address}:5432/bookmyshow",
           "spring.datasource.username":"${DBUsername}",
           "spring.datasource.password":"${DBPassword}",
           "redisHost":"${RedisCluster.RedisEndpoint.Address}",
@@ -295,7 +323,11 @@ Resources:
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
-        Statement: [{ Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }]
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
         - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy
@@ -311,7 +343,8 @@ Resources:
   Ec2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
-      Roles: [!Ref Ec2Role]
+      Roles:
+        - !Ref Ec2Role
 
 Outputs:
   FrontendWebsiteURL:

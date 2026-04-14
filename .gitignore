@@ -1,0 +1,10 @@
+# Java / Maven
+backend/target/
+backend/.mvn/
+backend/*.jar
+backend/*.war
+
+# React / Node
+frontend/node_modules/
+frontend/dist/
+frontend/build/

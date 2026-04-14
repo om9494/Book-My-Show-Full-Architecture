@@ -12,7 +12,7 @@ phases:
       - chmod +x mvnw  # <-- This fixes the "Permission denied" error!
       - ./mvnw clean package -DskipTests
       - cd ..
-      
+        
       # 2. Build React Frontend
       - cd frontend
       # Fetch the ALB DNS Name dynamically

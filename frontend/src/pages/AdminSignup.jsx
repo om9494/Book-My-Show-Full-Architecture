@@ -51,7 +51,7 @@ const AdminSignup = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     document.getElementById("error").innerText = "";
-    if(prompt("Enter the admin key to proceed") !== import.meta.env.VITE_ADMIN_KEY) {
+    if(prompt("Enter the admin key to proceed") !== "1234567890abcdef") {
         document.getElementById("error").innerText = "Invalid admin key";
         setSubmit("Sign Up");
         return;

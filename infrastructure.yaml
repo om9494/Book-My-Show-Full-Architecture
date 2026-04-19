@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: BookMyShow architecture with ALB, ASG, Redis, PostgreSQL, SNS, and SQS.
+Description: BookMyShow architecture with ALB, ASG, Redis, PostgreSQL, SNS, and SQS, plus fully automated CI/CD.
 
 Parameters:
   ProjectName:
@@ -21,6 +21,18 @@ Parameters:
     Type: String
     NoEcho: true
     MinLength: 8
+  # CI/CD Parameters
+  GitHubRepo:
+    Type: String
+    Description: "Your GitHub repository (Format: GitHubUsername/RepositoryName)"
+    Default: "yourusername/bookmyshow"
+  GitHubBranch:
+    Type: String
+    Description: "The branch to trigger deployments"
+    Default: "main"
+  GitHubConnectionArn:
+    Type: String
+    Description: "The ARN of your AWS CodeStar Connection to GitHub"
 
 Resources:
   # --- NETWORKING ---
@@ -381,6 +393,12 @@ Resources:
                 Resource:
                   - !Ref EmailTopic
                   - !GetAtt EmailQueue.Arn
+              # 🌟 ALLOW EC2 TO PULL CODE ARTIFACTS FROM S3 🌟
+              - Effect: Allow
+                Action: [ 's3:Get*', 's3:List*' ]
+                Resource: 
+                  - !Sub ${PipelineArtifactBucket.Arn}/*
+                  - !GetAtt PipelineArtifactBucket.Arn
 
   Ec2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -388,6 +406,44 @@ Resources:
       Roles:
         - !Ref Ec2Role
 
+  # 🌟 --- PIPELINE ARTIFACT BUCKET --- 🌟
+  PipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # 🌟 --- CODEBUILD ROLE --- 🌟
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codebuild.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [ 'logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents' ]
+                Resource: '*'
+              - Effect: Allow
+                Action: [ 's3:PutObject', 's3:GetObject', 's3:GetObjectVersion', 's3:GetBucketAcl', 's3:GetBucketLocation', 's3:ListBucket', 's3:DeleteObject' ]
+                Resource:
+                  - !Sub ${PipelineArtifactBucket.Arn}/*
+                  - !GetAtt PipelineArtifactBucket.Arn
+                  - !Sub ${FrontendBucket.Arn}/*
+                  - !GetAtt FrontendBucket.Arn
+              - Effect: Allow
+                Action: [ 'elasticloadbalancing:DescribeLoadBalancers' ]
+                Resource: '*'
+
+  # 🌟 --- CODEBUILD PROJECT --- 🌟
   AppBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -404,6 +460,115 @@ Resources:
             Value: !Ref FrontendBucket
       Source:
         Type: CODEPIPELINE
+
+  # 🌟 --- CODEDEPLOY ROLE --- 🌟
+  CodeDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codedeploy.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+
+  # 🌟 --- CODEDEPLOY APPLICATION & GROUP --- 🌟
+  DeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub ${ProjectName}-app
+      ComputePlatform: Server
+
+  DeployGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref DeployApplication
+      DeploymentGroupName: !Sub ${ProjectName}-dg
+      ServiceRoleArn: !GetAtt CodeDeployRole.Arn
+      AutoScalingGroups:
+        - !Ref AppAutoScalingGroup
+      DeploymentConfigName: CodeDeployDefault.OneAtATime
+
+  # 🌟 --- CODEPIPELINE ROLE --- 🌟
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codepipeline.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipelinePolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [ 's3:GetObject', 's3:GetObjectVersion', 's3:GetBucketVersioning', 's3:PutObjectAcl', 's3:PutObject' ]
+                Resource:
+                  - !GetAtt PipelineArtifactBucket.Arn
+                  - !Sub ${PipelineArtifactBucket.Arn}/*
+              - Effect: Allow
+                Action: [ 'codebuild:BatchGetBuilds', 'codebuild:StartBuild', 'codebuild:BatchGetBuildBatches', 'codebuild:StartBuildBatch' ]
+                Resource: !GetAtt AppBuildProject.Arn
+              - Effect: Allow
+                Action: [ 'codedeploy:CreateDeployment', 'codedeploy:GetApplication', 'codedeploy:GetApplicationRevision', 'codedeploy:GetDeployment', 'codedeploy:GetDeploymentConfig', 'codedeploy:RegisterApplicationRevision' ]
+                Resource: '*'
+              - Effect: Allow
+                Action: [ 'codestar-connections:UseConnection' ]
+                Resource: !Ref GitHubConnectionArn
+
+  # 🌟 --- THE PIPELINE --- 🌟
+  AppPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${ProjectName}-pipeline
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              Configuration:
+                ConnectionArn: !Ref GitHubConnectionArn
+                FullRepositoryId: !Ref GitHubRepo
+                BranchName: !Ref GitHubBranch
+              OutputArtifacts:
+                - Name: SourceArtifact
+        - Name: Build
+          Actions:
+            - Name: BuildReactAndJava
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ProjectName: !Ref AppBuildProject
+        - Name: Deploy
+          Actions:
+            - Name: DeployJavaToEC2
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeploy
+                Version: '1'
+              InputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ApplicationName: !Ref DeployApplication
+                DeploymentGroupName: !Ref DeployGroup
 
 Outputs:
   FrontendWebsiteURL:

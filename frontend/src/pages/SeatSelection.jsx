@@ -126,7 +126,6 @@ const SeatSelection = () => {
         return sum + (row ? row.price : 0);
     }, 0);
     
-    // In update mode, food cannot be changed, so its price is 0.
     const foodPrice = isUpdateMode ? 0 : Object.entries(selectedFood).reduce((total, [foodId, quantity]) => {
         const item = availableFood.find(f => idsMatch(getEntityId(f), foodId));
         return total + (item ? item.price * quantity : 0);
@@ -134,10 +133,7 @@ const SeatSelection = () => {
     
     const UPDATE_FEE = 20;
 
-    // --- FIX #3: Corrected amountToPay logic to align with backend capabilities ---
-    // In update mode, price is new seat + fee, minus original fare. No food price is included.
     const amountToPay = isUpdateMode ? Math.max(0, newSeatPrice + UPDATE_FEE - originalFare) : newSeatPrice + foodPrice;
-
 
     // --- TICKET UPDATE LOGIC ---
     const handleTicketUpdate = async () => {
@@ -160,16 +156,12 @@ const SeatSelection = () => {
                 return;
             }
             
-            // --- FIX #1: The payload now matches the backend TicketUpdateDto.java ---
             const updatePayload = {
                 originalTicketId: resolvedOriginalTicketId,
                 newShowId: resolvedShowId,
-                newSeatNo: selectedSeats[0], // Key is 'newSeatNo' and value is a single String
+                newSeatNo: selectedSeats[0],
                 userId: resolvedUserId
-                // Food IDs are removed as the backend does not support updating them.
             };
-
-            console.log("Update payload:", updatePayload);
 
             const response = await axios.put(
                 `${import.meta.env.VITE_BACKEND_API}/ticket/update`,
@@ -186,14 +178,14 @@ const SeatSelection = () => {
                     showTime: time,
                     movieId: toNumberId(movieId) ?? movieId,
                     selectedSeats,
-                    selectedFood: {}, // Food is not updated
+                    selectedFood: {}, 
                     availableFood,
                     totalAmount: amountToPay,
                     ticketEntryDto: {
                         showId: resolvedShowId,
                         userId: resolvedUserId,
                         requestSeats: selectedSeats,
-                        requestedFoodIds: [] // Food is not updated
+                        requestedFoodIds: [] 
                     },
                     isUpdateMode: true,
                     originalTicketId: originalTicketId
@@ -204,12 +196,7 @@ const SeatSelection = () => {
                 }, 1500);
             }
         } catch (error) {
-            console.error("Error updating ticket:", error);
-            console.error("Error response:", error.response?.data); 
-            console.error("Error status:", error.response?.status); 
-            
             let errorMessage = "Failed to update ticket. Please try again.";
-            
             if (error.response?.status === 409) {
                 errorMessage = error.response?.data || "Conflict: The ticket cannot be updated. This might be because the selected seat is no longer available.";
             } else if (error.response?.status === 404) {
@@ -218,10 +205,9 @@ const SeatSelection = () => {
                 errorMessage = error.response?.data?.message || "Invalid request. Please check your selection.";
             } else if (error.response?.status === 403) {
                 errorMessage = "You don't have permission to update this ticket.";
-            } else if (error.response?.data) { // Display backend error message directly
+            } else if (error.response?.data) { 
                 errorMessage = error.response.data;
             }
-            
             setStatusMessage(errorMessage);
         } finally {
             setIsProcessing(false);
@@ -290,7 +276,7 @@ const SeatSelection = () => {
         return false;
     };
 
-    // --- SEAT SELECTION LOGIC ---
+    // 🌟 --- OPTIMISTIC UI SEAT SELECTION LOGIC --- 🌟
     const handleSelectSeat = async (row, num) => {
         const seatNo = row + num;
         const token = localStorage.getItem("token");
@@ -313,66 +299,81 @@ const SeatSelection = () => {
         }
 
         if (seatObject.lockedByUserId && !idsMatch(seatObject.lockedByUserId, userId)) {
-            setStatusMessage("This seat is currently locked by another user. Please try a different seat.");
+            setStatusMessage("This seat is currently locked by another user.");
             return;
         }
 
         if (!seatObject.isAvailable) {
-            setStatusMessage("This seat is already sold. Please select an available seat.");
+            setStatusMessage("This seat is already sold.");
             return;
         }
 
-        if (selectedSeats.includes(seatNo)) {
-            // Unselect seat
+        const isCurrentlySelected = selectedSeats.includes(seatNo);
+
+        if (isCurrentlySelected) {
+            // 1. OPTIMISTIC UNLOCK: Update UI instantly
+            setSelectedSeats(prev => prev.filter((s) => s !== seatNo));
+            setAllShowSeats(prevSeats => 
+                prevSeats.map(seat => 
+                    idsMatch(getEntityId(seat), seatObjectId)
+                        ? { ...seat, lockedByUserId: null }
+                        : seat
+                )
+            );
+            setStatusMessage("");
+
+            // 2. BACKGROUND API CALL
             try {
-                setIsProcessing(true);
                 await axios.post(`${import.meta.env.VITE_BACKEND_API}/seats/unlockSeat`, 
                     { seatId: seatObjectId, userId }, 
                     { headers: { "Authorization": `Bearer ${token}` } }
                 );
-                setSelectedSeats(selectedSeats.filter((s) => s !== seatNo));
-                setStatusMessage("Seat unselected successfully.");
             } catch (error) { 
-                setStatusMessage(error.response?.data?.message || `Failed to unlock seat.`); 
-            } finally { 
-                setIsProcessing(false); 
+                // 3. ROLLBACK ON FAILURE
+                setSelectedSeats(prev => [...prev, seatNo]);
+                setAllShowSeats(prevSeats => 
+                    prevSeats.map(seat => 
+                        idsMatch(getEntityId(seat), seatObjectId)
+                            ? { ...seat, lockedByUserId: userId }
+                            : seat
+                    )
+                );
+                setStatusMessage("Network error: Failed to unlock seat."); 
             }
         } else if (selectedSeats.length < count) {
-            // Select seat
+            // 1. OPTIMISTIC LOCK: Update UI instantly
+            setSelectedSeats(prev => [...prev, seatNo]);
+            setAllShowSeats(prevSeats => 
+                prevSeats.map(seat => 
+                    idsMatch(getEntityId(seat), seatObjectId)
+                        ? { ...seat, lockedByUserId: userId }
+                        : seat
+                )
+            );
+            setStatusMessage("");
+
+            // 2. BACKGROUND API CALL
             try {
-                setIsProcessing(true);
-                const response = await axios.post(`${import.meta.env.VITE_BACKEND_API}/seats/lockSeat`, 
+                await axios.post(`${import.meta.env.VITE_BACKEND_API}/seats/lockSeat`, 
                     { seatId: seatObjectId, userId }, 
                     { headers: { "Authorization": `Bearer ${token}` } }
                 );
-                
-                if (response.status === 200) {
-                    setSelectedSeats([...selectedSeats, seatNo]);
-                    setStatusMessage("Seat selected successfully!");
-                    
-                    setAllShowSeats(prevSeats => 
-                        prevSeats.map(seat => 
-                            idsMatch(getEntityId(seat), seatObjectId)
-                                ? { ...seat, lockedByUserId: userId }
-                                : seat
-                        )
-                    );
-                }
             } catch (error) { 
-                const errorMessage = error.response?.data?.message || "Seat may be taken by another user.";
-                setStatusMessage(errorMessage);
+                // 3. ROLLBACK ON CONFLICT (Someone else got it first!)
+                setSelectedSeats(prev => prev.filter((s) => s !== seatNo));
                 
-                if (error.response?.status === 409) {
-                    setAllShowSeats(prevSeats => 
-                        prevSeats.map(seat => 
-                            idsMatch(getEntityId(seat), seatObjectId)
-                                ? { ...seat, lockedByUserId: 'other' }
-                                : seat
-                        )
-                    );
-                }
-            } finally { 
-                setIsProcessing(false); 
+                const isConflict = error.response?.status === 409;
+                
+                setAllShowSeats(prevSeats => 
+                    prevSeats.map(seat => 
+                        idsMatch(getEntityId(seat), seatObjectId)
+                            ? { ...seat, lockedByUserId: isConflict ? 'other' : null }
+                            : seat
+                    )
+                );
+                
+                const errorMessage = error.response?.data || "Seat may be taken by another user.";
+                setStatusMessage(errorMessage);
             }
         } else { 
             setStatusMessage(`You can only select ${count} seat(s).`); 

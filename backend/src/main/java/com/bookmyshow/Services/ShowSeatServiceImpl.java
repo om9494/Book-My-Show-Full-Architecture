@@ -1,12 +1,11 @@
 package com.bookmyshow.Services;
 
 import org.springframework.stereotype.Service;
-import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit; // Import ChronoUnit
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.springframework.beans.factory.annotation.Autowired;
-// It's generally better to use Spring's Transactional annotation
-import org.springframework.transaction.annotation.Transactional; 
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 import com.bookmyshow.Exceptions.SeatAlreadyLockedException;
 import com.bookmyshow.Exceptions.ShowDoesNotExists;
@@ -19,14 +18,17 @@ import com.bookmyshow.Repositories.ShowSeatRepository;
 public class ShowSeatServiceImpl implements ShowSeatService {
 
     @Autowired
-    // Corrected the typo from "Repositiory" to "Repository"
-    private ShowSeatRepository showSeatRepository; 
+    private ShowSeatRepository showSeatRepository;
 
     @Autowired
     private ShowRepository showRepository;
-    
-    // A constant for lock timeout is good practice
+
+    // Inject Redis for 1-millisecond temporary locks
+    @Autowired
+    private StringRedisTemplate redisTemplate;
+
     private static final long LOCK_TIMEOUT_MINUTES = 5;
+    public static final String REDIS_LOCK_PREFIX = "seat:lock:"; // Public so TicketService can use it
 
     @Override
     public List<ShowSeat> getAllShowSeats() {
@@ -35,15 +37,28 @@ public class ShowSeatServiceImpl implements ShowSeatService {
 
     @Override
     public ShowSeat getShowSeatById(int id) throws ShowSeatDoesNotExists {
-        // Using orElseThrow is a more concise way to handle Optionals
-        return showSeatRepository.findById(id)
-                .orElseThrow(ShowSeatDoesNotExists::new);
+        ShowSeat seat = showSeatRepository.findById(id).orElseThrow(ShowSeatDoesNotExists::new);
+        applyRedisLockStatus(seat);
+        return seat;
+    }
+
+    /**
+     * Helper: Stitches the temporary Redis lock state into the RDS entity before sending to React.
+     */
+    private void applyRedisLockStatus(ShowSeat seat) {
+        if (seat.getIsAvailable()) {
+            String redisKey = REDIS_LOCK_PREFIX + seat.getId();
+            String lockedBy = redisTemplate.opsForValue().get(redisKey);
+            seat.setLockedByUserId(lockedBy);
+        }
     }
 
     @Override
     public List<ShowSeat> getAvailableSeatsByShowId(int showId) throws ShowDoesNotExists {
         showRepository.findById(showId).orElseThrow(ShowDoesNotExists::new);
-        return showSeatRepository.findAvailableSeatsByShowId(showId);
+        List<ShowSeat> seats = showSeatRepository.findAvailableSeatsByShowId(showId);
+        seats.forEach(this::applyRedisLockStatus);
+        return seats;
     }
 
     @Override
@@ -55,53 +70,54 @@ public class ShowSeatServiceImpl implements ShowSeatService {
     @Override
     public List<ShowSeat> getShowSeatsByShowId(int showId) throws ShowDoesNotExists {
         showRepository.findById(showId).orElseThrow(ShowDoesNotExists::new);
-        return showSeatRepository.findByShowId(showId);
+        List<ShowSeat> seats = showSeatRepository.findByShowId(showId);
+        seats.forEach(this::applyRedisLockStatus);
+        return seats;
     }
-    
+
     @Override
     @Transactional
     public ShowSeat lockSeat(int seatId, String userId) throws ShowSeatDoesNotExists, SeatAlreadyLockedException {
-        ShowSeat showSeat = showSeatRepository.findById(seatId)
-                .orElseThrow(ShowSeatDoesNotExists::new);
+        ShowSeat showSeat = showSeatRepository.findById(seatId).orElseThrow(ShowSeatDoesNotExists::new);
 
-        // 1. CRITICAL FIX: First, check if the seat is already permanently booked.
+        // 1. Check if the seat is already permanently paid for in RDS
         if (!showSeat.getIsAvailable()) {
-            throw new SeatAlreadyLockedException("This seat has already been booked.");
+            throw new SeatAlreadyLockedException("This seat is permanently booked.");
         }
 
-        // 2. CRITICAL FIX: Check if the seat is locked by SOMEONE ELSE.
-        if (showSeat.getLockedByUserId() != null && !showSeat.getLockedByUserId().equals(userId)) {
-            LocalDateTime lockTime = showSeat.getLockedAt();
-            long minutesSinceLock = ChronoUnit.MINUTES.between(lockTime, LocalDateTime.now());
+        String redisKey = REDIS_LOCK_PREFIX + seatId;
 
-            // If the lock by another user is still valid, throw an exception.
-            if (minutesSinceLock < LOCK_TIMEOUT_MINUTES) {
-                throw new SeatAlreadyLockedException("This seat is currently held by another user. Please try again in a few moments.");
-            }
+        // 2. Check ElastiCache for an existing temporary lock
+        String existingLockUser = redisTemplate.opsForValue().get(redisKey);
+        if (existingLockUser != null && !existingLockUser.equals(userId)) {
+            throw new SeatAlreadyLockedException("Seat held by another user. Try again in 5 mins.");
         }
 
-        // If we pass the checks, lock the seat for the current user.
-        // This will also correctly "re-lock" or refresh the lock for the same user.
+        // 3. Set the lock in Redis with a strict TTL.
+        redisTemplate.opsForValue().set(redisKey, userId, LOCK_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+
+        // Update memory state for frontend response (DO NOT save to RDS)
         showSeat.setLockedByUserId(userId);
-        showSeat.setLockedAt(LocalDateTime.now());
-        
-        return showSeatRepository.save(showSeat);
+
+        return showSeat;
     }
 
     @Override
     @Transactional
     public ShowSeat unlockSeat(int seatId, String userId) throws ShowSeatDoesNotExists {
-        ShowSeat showSeat = showSeatRepository.findById(seatId)
-                .orElseThrow(ShowSeatDoesNotExists::new);
-        
-        // Your unlock logic is good. We only unlock if the user ID matches.
-        if (userId.equals(showSeat.getLockedByUserId())) {
+        ShowSeat showSeat = showSeatRepository.findById(seatId).orElseThrow(ShowSeatDoesNotExists::new);
+
+        String redisKey = REDIS_LOCK_PREFIX + seatId;
+        String existingLockUser = redisTemplate.opsForValue().get(redisKey);
+
+        // Only delete the Redis lock if the user requesting the unlock owns it
+        if (userId.equals(existingLockUser)) {
+            redisTemplate.delete(redisKey);
             showSeat.setLockedByUserId(null);
-            showSeat.setLockedAt(null);
-            return showSeatRepository.save(showSeat);
+        } else if (existingLockUser != null) {
+            showSeat.setLockedByUserId(existingLockUser);
         }
-        
-        // If the lock belongs to someone else, do nothing and return the seat as is.
+
         return showSeat;
     }
 }

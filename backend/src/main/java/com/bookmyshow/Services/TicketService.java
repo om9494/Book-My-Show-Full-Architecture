@@ -13,11 +13,11 @@ import com.bookmyshow.Models.ShowSeat;
 import com.bookmyshow.Models.Ticket;
 import com.bookmyshow.Models.User;
 import com.bookmyshow.Repositories.*;
-// Removed TicketTransformer import as it's not used
 
 import jakarta.transaction.Transactional;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate; // <-- NEW
 import org.springframework.stereotype.Service;
 
 import java.sql.Time;
@@ -49,13 +49,16 @@ public class TicketService {
     @Autowired
     private EmailService emailService;
 
+    // 🌟 1. Inject Redis to delete the temporary locks when a ticket is purchased
+    @Autowired
+    private StringRedisTemplate redisTemplate;
+
     public List<TicketResponseDto> getAllTicketsByUserId(Integer userId) throws UserDoesNotExist {
         userRepository.findById(userId).orElseThrow(UserDoesNotExist::new);
         List<Ticket> tickets = ticketRepository.findByUserId(userId);
         List<TicketResponseDto> ticketResponseDtos = new ArrayList<>();
         for (Ticket ticket : tickets) {
             Show show = ticket.getShow();
-            // Use the new helper method to build the DTO
             ticketResponseDtos.add(buildTicketResponseDto(show, ticket));
         }
         return ticketResponseDtos;
@@ -68,12 +71,11 @@ public class TicketService {
         List<TicketResponseDto> ticketResponseDtos = new ArrayList<>();
         for (Ticket ticket : tickets) {
             Show show = ticket.getShow();
-            // Use the new helper method to build the DTO
             ticketResponseDtos.add(buildTicketResponseDto(show, ticket));
         }
         return ticketResponseDtos;
     }
-    
+
     private TicketResponseDto buildTicketResponseDto(Show show, Ticket ticket) {
         return TicketResponseDto.builder()
                 .ticketId(ticket.getTicketId())
@@ -91,6 +93,7 @@ public class TicketService {
                 .build();
     }
 
+    @Transactional
     public List<TicketResponseDto> ticketBooking(TicketEntryDto ticketEntryDto) throws Exception {
         Optional<Show> showOpt = showRepository.findById(ticketEntryDto.getShowId());
         if (showOpt.isEmpty()) {
@@ -157,14 +160,14 @@ public class TicketService {
 
             showSeatRepository.save(bookedSeat);
             Ticket savedTicket = ticketRepository.save(ticket);
-            
+
+            // 🌟 2. CLEAR THE TEMPORARY REDIS LOCK BECAUSE THE TICKET IS NOW OFFICIALLY BOUGHT
+            redisTemplate.delete(ShowSeatServiceImpl.REDIS_LOCK_PREFIX + bookedSeat.getId());
+
             createdTicketsDto.add(buildTicketResponseDto(show, savedTicket));
         }
 
-        // --- START OF FIX: Pass the user's name to the email service ---
         emailService.sendTicketConfirmationEmail(user.getEmail(), user.getName(), createdTicketsDto);
-        // --- END OF FIX ---
-
         return createdTicketsDto;
     }
 
@@ -190,7 +193,7 @@ public class TicketService {
 
         Show newShow = showRepository.findById(dto.getNewShowId())
                 .orElseThrow(ShowDoesNotExists::new);
-        
+
         ShowSeat newSeat = findAndValidateNewSeat(newShow, dto.getNewSeatNo());
 
         oldSeat.setIsAvailable(Boolean.TRUE);
@@ -199,24 +202,23 @@ public class TicketService {
         newSeat.setIsAvailable(Boolean.FALSE);
         showSeatRepository.save(newSeat);
 
+        // 🌟 3. CLEAR THE TEMPORARY REDIS LOCK FOR THE NEW SEAT
+        redisTemplate.delete(ShowSeatServiceImpl.REDIS_LOCK_PREFIX + newSeat.getId());
+
         originalTicket.setShow(newShow);
         originalTicket.setShowSeat(newSeat);
         originalTicket.setTicketPrice(newSeat.getPrice() + UPDATE_FEE);
 
         Ticket updatedTicket = ticketRepository.save(originalTicket);
-
         TicketResponseDto ticketResponseDto = buildTicketResponseDto(newShow, updatedTicket);
-        
-        // --- START OF FIX: Pass the user's name to the email service ---
-        emailService.sendTicketConfirmationEmail(user.getEmail(), user.getName(), List.of(ticketResponseDto));
-        // --- END OF FIX ---
 
+        emailService.sendTicketConfirmationEmail(user.getEmail(), user.getName(), List.of(ticketResponseDto));
         return ticketResponseDto;
     }
-    
+
     private ShowSeat findAndValidateNewSeat(Show show, String seatNo) throws RequestedSeatAreNotAvailable {
         List<ShowSeat> showSeats = showSeatRepository.findByShowId(show.getShowId());
-        
+
         for (ShowSeat seat : showSeats) {
             if (seat.getSeatNo().equals(seatNo)) {
                 if (!seat.getIsAvailable()) {

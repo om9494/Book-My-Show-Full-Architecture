@@ -14,6 +14,9 @@ export RAZORPAY_KEY_SECRET=$(echo $SECRET_JSON | jq -r '."razorpay.key.secret"')
 export MAIL_USERNAME=$(echo $SECRET_JSON | jq -r '."spring.mail.username"')
 export MAIL_PASSWORD=$(echo $SECRET_JSON | jq -r '."spring.mail.password"')
 
+export SNS_TOPIC_ARN=$(echo $SECRET_JSON | jq -r '."sns.topic.arn"')
+export SQS_QUEUE_NAME=$(echo $SECRET_JSON | jq -r '."sqs.queue.name"')
+
 # Start the application
 cd /opt/bookmyshow
 nohup java -jar /opt/bookmyshow/book-my-show-0.0.1-SNAPSHOT.jar --server.address=0.0.0.0 > /dev/null 2>&1 &

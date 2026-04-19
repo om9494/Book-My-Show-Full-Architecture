@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: BookMyShow architecture with ALB, ASG, Redis, and PostgreSQL (No NAT Gateway).
+Description: BookMyShow architecture with ALB, ASG, Redis, PostgreSQL, SNS, and SQS.
 
 Parameters:
   ProjectName:
@@ -49,9 +49,6 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.20.0.0/24
       MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: !Sub ${ProjectName}-public-a
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
@@ -60,9 +57,6 @@ Resources:
       AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: 10.20.1.0/24
       MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: !Sub ${ProjectName}-public-b
 
   PrivateDbSubnetA:
     Type: AWS::EC2::Subnet
@@ -211,7 +205,6 @@ Resources:
             mkdir -p /opt/bookmyshow
             chown ec2-user:ec2-user /opt/bookmyshow
             
-            # Install CodeDeploy Agent
             cd /home/ec2-user
             wget https://aws-codedeploy-ap-south-1.s3.ap-south-1.amazonaws.com/latest/install
             chmod +x ./install
@@ -235,7 +228,7 @@ Resources:
       MaxSize: '3'
       DesiredCapacity: '1'
 
-  # --- STORAGE, SECRETS, & DATABASES ---
+  # --- FRONTEND S3 ---
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -260,6 +253,7 @@ Resources:
             Action: s3:GetObject
             Resource: !Sub ${FrontendBucket.Arn}/*
 
+  # --- DATABASES ---
   DbSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
@@ -303,6 +297,41 @@ Resources:
         - !Ref RedisSecurityGroup
       CacheSubnetGroupName: !Ref RedisSubnetGroup
 
+  EmailQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${ProjectName}-email-queue
+
+  EmailTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${ProjectName}-email-topic
+
+  EmailQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref EmailQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt EmailQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref EmailTopic
+
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref EmailTopic
+      Endpoint: !GetAtt EmailQueue.Arn
+      Protocol: sqs
+      RawMessageDelivery: true
+
   AppSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -313,11 +342,14 @@ Resources:
           "spring.datasource.username":"${DBUsername}",
           "spring.datasource.password":"${DBPassword}",
           "redisHost":"${RedisCluster.RedisEndpoint.Address}",
-          "razorpay.key.id":"REPLACE_ME",
-          "razorpay.key.secret":"REPLACE_ME"
+          "sns.topic.arn":"${EmailTopic}",
+          "sqs.queue.name":"${EmailQueue.QueueName}",
+          "razorpay.key.id":"rzp_test_SVTEh21VgTqmWl",
+          "razorpay.key.secret":"c1SR3zDFZ3zn80X84GxUtupJ",
+          "spring.mail.username":"kirannandi896@gmail.com",
+          "spring.mail.password":"sbdq ohzr xizc muoe"
         }
 
-  # --- IAM ROLES ---
   Ec2Role:
     Type: AWS::IAM::Role
     Properties:
@@ -339,6 +371,16 @@ Resources:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource: !Ref AppSecret
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:GetQueueUrl
+                Resource:
+                  - !Ref EmailTopic
+                  - !GetAtt EmailQueue.Arn
 
   Ec2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -346,10 +388,25 @@ Resources:
       Roles:
         - !Ref Ec2Role
 
+  AppBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${ProjectName}-build
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: FRONTEND_BUCKET
+            Value: !Ref FrontendBucket
+      Source:
+        Type: CODEPIPELINE
+
 Outputs:
   FrontendWebsiteURL:
     Value: !GetAtt FrontendBucket.WebsiteURL
-  FrontendBucketName:
-    Value: !Ref FrontendBucket
   ALBDnsName:
     Value: !GetAtt AppLoadBalancer.DNSName

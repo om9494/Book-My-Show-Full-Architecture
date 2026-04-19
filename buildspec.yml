@@ -9,7 +9,7 @@ phases:
     commands:
       # 1. Build Spring Boot Backend (Maven)
       - cd backend
-      - chmod +x mvnw  # <-- This fixes the "Permission denied" error!
+      - chmod +x mvnw
       - ./mvnw clean package -DskipTests
       - cd ..
         
@@ -24,13 +24,12 @@ phases:
       
   post_build:
     commands:
-      # 3. Deploy frontend to S3
-      # NOTE: If using Create React App, change 'dist/' to 'build/' below
-      - aws s3 sync frontend/dist/ s3://bookmyshow-stack-frontendbucket-3mdev7qp7f6x --delete
+      # 3. 🌟 DYNAMIC S3 DEPLOYMENT 🌟
+      # Now AWS automatically knows which bucket to use!
+      - aws s3 sync frontend/dist/ s3://$FRONTEND_BUCKET --delete
 
 artifacts:
   files:
-    # 4. Correct artifact path for Maven target folder
     - backend/target/*.jar
     - appspec.yml
     - scripts/*

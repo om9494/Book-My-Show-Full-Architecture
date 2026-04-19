@@ -447,7 +447,7 @@ Resources:
   AppBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: !Sub ${ProjectName}-build
+      Name: !Sub ${ProjectName}-build-v2
       ServiceRole: !GetAtt CodeBuildRole.Arn
       Artifacts:
         Type: CODEPIPELINE
